@@ -26,11 +26,34 @@
 #define TFA_MIXER_CHIP_SELECTOR "TFA_CHIP_SELECTOR"
 #define TFA_MIXER_PROFILE "TFA Profile"
 
+namespace {
+
+static int detectSpeakerPaType(std::shared_ptr<ResourceManager> rm)
+{
+    struct mixer *mixer = nullptr;
+
+    if (!rm || rm->getHwAudioMixer(&mixer) || !mixer)
+        return OPLUS_SPEAKER_PA_UNKNOWN;
+
+    if (mixer_get_ctl_by_name(mixer, "TFA_CHIP_SELECTOR"))
+        return OPLUS_SPEAKER_PA_TFA98XX;
+
+    if (mixer_get_ctl_by_name(mixer, "SpkrLeft Sipa Type"))
+        return OPLUS_SPEAKER_PA_SIA;
+
+    return OPLUS_SPEAKER_PA_UNKNOWN;
+}
+
+}  // namespace
+
 OplusSpeakerProtection::OplusSpeakerProtection(
     struct pal_device *device, std::shared_ptr<ResourceManager> Rm)
     : Speaker(device, Rm)
 {
     rm = Rm;
+    mSpeakerType = detectSpeakerPaType(Rm);
+    if (mSpeakerType == OPLUS_SPEAKER_PA_UNKNOWN)
+        PAL_DBG(LOG_TAG, "unknown speaker PA type");
     mSpkDev = OplusSpeakerDevice::getInstance(mSpeakerType);
     if (mSpkDev)
         mSpkDev->init();
@@ -134,6 +157,9 @@ int OplusSpeakerProtection::start()
             mSpkDev->start();
     }
 
+    if (mSpkDev)
+        mSpkDev->lowBatAdjustGainInit();
+
     updateSPcustomPayload();
 
     mStarted = true;
@@ -176,10 +202,12 @@ int OplusSpeakerProtection::spkrProtProcessingMode(bool enable)
         return -EINVAL;
 
     if (enable) {
-        ret = setMixerInt(TFA_MIXER_CHIP_SELECTOR, 3);
-        if (ret && ret != -ENOENT)
-            PAL_ERR(LOG_TAG, "failed to select TFA chip: %d", ret);
-        setMixerEnum(TFA_MIXER_PROFILE, "speaker");
+        if (mSpeakerType == OPLUS_SPEAKER_PA_TFA98XX) {
+            ret = setMixerInt(TFA_MIXER_CHIP_SELECTOR, 3);
+            if (ret && ret != -ENOENT)
+                PAL_ERR(LOG_TAG, "failed to select TFA chip: %d", ret);
+            setMixerEnum(TFA_MIXER_PROFILE, "speaker");
+        }
         mSpkDev->deviceMute(false);
     } else {
         mSpkDev->deviceMute(true);
@@ -235,7 +263,7 @@ void OplusSpeakerProtection::updateSPcustomPayload()
         return;
     }
 
-    if (!mSpkDev->isCalibrated()) {
+    if (mSpeakerType != OPLUS_SPEAKER_PA_SIA && !mSpkDev->isCalibrated()) {
         PAL_INFO(LOG_TAG, "speaker not calibrated, skipping SP payload");
         return;
     }
